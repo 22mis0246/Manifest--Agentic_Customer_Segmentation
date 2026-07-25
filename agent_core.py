@@ -262,7 +262,7 @@ MAX_TOOL_STEPS = 5
 # ---------------------------------------------------------------------------
 
 class SegmentIQAgent:
-    def __init__(self, model: str = "gemini-2.5-flash"):
+    def __init__(self, model: str = "gemini-3.6-flash"):
         api_key = os.environ.get("GEMINI_API_KEY")
         if not api_key:
             raise RuntimeError(
