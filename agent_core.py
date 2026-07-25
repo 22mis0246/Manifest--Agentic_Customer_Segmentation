@@ -55,7 +55,11 @@ TOOL_DEFINITIONS = [
                     "type": "array",
                     "items": {"type": "string"},
                     "description": "Specific columns to analyze. Empty list = analyze all columns.",
-                }
+                },
+                "group_by_segment": {
+                    "type": "boolean",
+                    "description": "Set true when comparing metrics across customer segments.",
+                },
             },
             "required": [],
         },
@@ -77,7 +81,7 @@ TOOL_DEFINITIONS = [
                     "description": "Which derived features to compute, e.g. ['avg_monthly_balance', 'tx_frequency'].",
                 }
             },
-            "required": ["features_requested"],
+            "required": [],
         },
     },
     {
@@ -106,7 +110,7 @@ TOOL_DEFINITIONS = [
                     "description": "Segmentation approach. Default rule_based unless user asks for ML/clustering explicitly.",
                 },
             },
-            "required": ["criteria"],
+            "required": [],
         },
     },
     {
@@ -178,21 +182,19 @@ def _to_gemini_tools(defs: list[dict]):
 # 2. Placeholder tool bodies — replaced by real imports as each module lands
 # ---------------------------------------------------------------------------
 
-def _not_implemented(tool_name: str, **kwargs) -> dict:
-    return {
-        "status": "not_implemented",
-        "tool": tool_name,
-        "received_params": kwargs,
-        "note": f"{tool_name} is wired into the agent but has no logic yet.",
-    }
+from tools.eda_tool import eda_tool
+from tools.explainability_tool import explainability_tool
+from tools.feature_engineering_tool import feature_engineering_tool
+from tools.recommendation_tool import recommendation_tool
+from tools.segmentation_tool import segmentation_tool
 
 
 TOOL_REGISTRY: dict[str, Callable[..., Any]] = {
-    "eda_tool": lambda **kw: _not_implemented("eda_tool", **kw),
-    "feature_engineering_tool": lambda **kw: _not_implemented("feature_engineering_tool", **kw),
-    "segmentation_tool": lambda **kw: _not_implemented("segmentation_tool", **kw),
-    "explainability_tool": lambda **kw: _not_implemented("explainability_tool", **kw),
-    "recommendation_tool": lambda **kw: _not_implemented("recommendation_tool", **kw),
+    "eda_tool": eda_tool,
+    "feature_engineering_tool": feature_engineering_tool,
+    "segmentation_tool": segmentation_tool,
+    "explainability_tool": explainability_tool,
+    "recommendation_tool": recommendation_tool,
 }
 
 
@@ -227,20 +229,32 @@ class AgentResult:
     needs_clarification: bool = False
     clarifying_question: str | None = None
     trace: list[TraceEvent] = field(default_factory=list)
+    tools_used: list[dict[str, Any]] = field(default_factory=list)
+    summary: str | None = None
 
     def trace_as_text(self) -> str:
         return "\n".join(f"[{e.step}] {e.detail}" for e in self.trace)
 
 
 SYSTEM_PROMPT = (
-    "You are the routing brain for SegmentIQ, a retail banking "
-    "customer segmentation agent. Given a user's natural language "
-    "question, decide which single tool best answers it and extract "
-    "the parameters from the query. If the query is ambiguous or "
-    "missing information needed to call a tool correctly (e.g. no "
-    "criteria given for segmentation), do NOT guess — ask a "
-    "clarifying question in plain text instead of calling a tool."
+    "You are SegmentIQ, an analytics agent for retail banking. "
+    "Plan the minimum set of tools needed to answer the user's question. "
+    "Call tools one at a time. Typical flows:\n"
+    "- Segmentation requests: feature_engineering_tool -> segmentation_tool\n"
+    "- Explain segment rules: explainability_tool (segment_name when known)\n"
+    "- Segment comparisons: segmentation_tool if needed -> eda_tool with group_by_segment=true\n"
+    "- Conversion/up-sell: recommendation_tool with conversion_query=true\n"
+    "Use rule_based segmentation with 3 segments for priority/regular/dormant wording. "
+    "If the request is ambiguous, ask a clarifying question instead of calling tools."
 )
+
+SYNTHESIS_PROMPT = (
+    "You are SegmentIQ reporting to a bank analytics lead. "
+    "Turn the tool outputs into a concise, human-readable answer with bullet insights, "
+    "plain numbers, and recommended next actions. Do not mention internal tool names."
+)
+
+MAX_TOOL_STEPS = 5
 
 
 # ---------------------------------------------------------------------------
@@ -258,67 +272,114 @@ class SegmentIQAgent:
         self.model = model
         self.client = genai.Client(api_key=api_key)
 
-    def run(self, user_query: str) -> AgentResult:
-        trace: list[TraceEvent] = [TraceEvent("received_query", user_query)]
-
-        response = self.client.models.generate_content(
-            model=self.model,
-            contents=user_query,
-            config=types.GenerateContentConfig(
-                system_instruction=SYSTEM_PROMPT,
-                tools=_to_gemini_tools(TOOL_DEFINITIONS),
-                # AUTO lets the model choose freely between calling a tool
-                # or replying in plain text (needed for clarifying questions).
-                tool_config=types.ToolConfig(
-                    function_calling_config=types.FunctionCallingConfig(mode="AUTO")
-                ),
-            ),
-        )
-
-        candidate = response.candidates[0]
-        parts = candidate.content.parts
-
-        function_call = next((p.function_call for p in parts if p.function_call), None)
-        text_part = next((p.text for p in parts if p.text), None)
-
-        # Case 1: Gemini asked for clarification instead of calling a tool
-        if function_call is None:
-            question = text_part or "Could you clarify your request?"
-            trace.append(TraceEvent("clarification_needed", question))
-            return AgentResult(
-                query=user_query,
-                tool_called=None,
-                tool_params={},
-                tool_output=None,
-                needs_clarification=True,
-                clarifying_question=question,
-                trace=trace,
-            )
-
-        # Case 2: Gemini selected a tool — execute it
-        tool_name = function_call.name
-        tool_params = dict(function_call.args) if function_call.args else {}
-        trace.append(
-            TraceEvent(
-                "tool_selected",
-                f"{tool_name} with params {json.dumps(tool_params, default=str)}",
-            )
-        )
-
+    def _execute_tool(self, tool_name: str, tool_params: dict[str, Any]) -> Any:
         tool_fn = TOOL_REGISTRY.get(tool_name)
         if tool_fn is None:
-            trace.append(TraceEvent("error", f"No implementation registered for {tool_name}"))
-            return AgentResult(user_query, tool_name, tool_params, None, trace=trace)
+            raise KeyError(f"No implementation registered for {tool_name}")
+        return tool_fn(**tool_params)
 
-        result = tool_fn(**tool_params)
-        trace.append(TraceEvent("tool_executed", f"{tool_name} returned a result"))
+    def _synthesize(self, user_query: str, tools_used: list[dict[str, Any]]) -> str:
+        payload = json.dumps(tools_used, default=str)
+        response = self.client.models.generate_content(
+            model=self.model,
+            contents=(
+                f"User question:\n{user_query}\n\n"
+                f"Analytics outputs:\n{payload}\n\n"
+                "Write the final answer for the bank team."
+            ),
+            config=types.GenerateContentConfig(system_instruction=SYNTHESIS_PROMPT),
+        )
+        return response.text or "Analysis complete. Review the structured output for details."
 
+    def run(self, user_query: str) -> AgentResult:
+        trace: list[TraceEvent] = [TraceEvent("received_query", user_query)]
+        tools_used: list[dict[str, Any]] = []
+        contents: list[Any] = [user_query]
+
+        for step in range(MAX_TOOL_STEPS):
+            response = self.client.models.generate_content(
+                model=self.model,
+                contents=contents,
+                config=types.GenerateContentConfig(
+                    system_instruction=SYSTEM_PROMPT,
+                    tools=_to_gemini_tools(TOOL_DEFINITIONS),
+                    tool_config=types.ToolConfig(
+                        function_calling_config=types.FunctionCallingConfig(mode="AUTO")
+                    ),
+                ),
+            )
+
+            parts = response.candidates[0].content.parts
+            function_call = next((p.function_call for p in parts if p.function_call), None)
+            text_part = next((p.text for p in parts if p.text), None)
+
+            if function_call is None:
+                if not tools_used:
+                    question = text_part or "Could you clarify your request?"
+                    trace.append(TraceEvent("clarification_needed", question))
+                    return AgentResult(
+                        query=user_query,
+                        tool_called=None,
+                        tool_params={},
+                        tool_output=None,
+                        needs_clarification=True,
+                        clarifying_question=question,
+                        trace=trace,
+                    )
+                break
+
+            tool_name = function_call.name
+            tool_params = dict(function_call.args) if function_call.args else {}
+            trace.append(
+                TraceEvent(
+                    "tool_selected",
+                    f"step {step + 1}: {tool_name} {json.dumps(tool_params, default=str)}",
+                )
+            )
+
+            try:
+                result = self._execute_tool(tool_name, tool_params)
+            except Exception as exc:
+                trace.append(TraceEvent("error", str(exc)))
+                return AgentResult(
+                    query=user_query,
+                    tool_called=tool_name,
+                    tool_params=tool_params,
+                    tool_output={"error": str(exc)},
+                    trace=trace,
+                    tools_used=tools_used,
+                )
+
+            tools_used.append({"tool": tool_name, "params": tool_params, "result": result})
+            trace.append(TraceEvent("tool_executed", f"{tool_name} finished"))
+
+            contents.append(response.candidates[0].content)
+            contents.append(
+                types.Content(
+                    role="user",
+                    parts=[
+                        types.Part(
+                            function_response=types.FunctionResponse(
+                                name=tool_name,
+                                response={"result": result},
+                            )
+                        )
+                    ],
+                )
+            )
+
+        summary = self._synthesize(user_query, tools_used)
+        trace.append(TraceEvent("summary_ready", "Generated human-readable response"))
+
+        last = tools_used[-1] if tools_used else {}
         return AgentResult(
             query=user_query,
-            tool_called=tool_name,
-            tool_params=tool_params,
-            tool_output=result,
+            tool_called=last.get("tool"),
+            tool_params=last.get("params", {}),
+            tool_output=last.get("result"),
             trace=trace,
+            tools_used=tools_used,
+            summary=summary,
         )
 
 
