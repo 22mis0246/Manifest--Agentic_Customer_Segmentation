@@ -2,6 +2,8 @@
 
 SegmentIQ is a Streamlit-based customer segmentation app for retail banking. It lets you upload a CSV, ask questions in plain English, and get segment analysis, reasoning traces, and downloadable output files.
 
+<img width="1600" height="761" alt="WhatsApp Image 2026-07-26 at 3 16 08 PM" src="https://github.com/user-attachments/assets/a5326635-4d6c-4154-810d-76d76faf5aa2" />
+
 ## What It Does
 
 - Upload a customer transaction dataset in CSV format
