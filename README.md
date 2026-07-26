@@ -42,7 +42,6 @@ GEMINI_API_KEY=your_key_here
 Open the project in VS Code, open a terminal in the project folder, and run:
 
 ```powershell
-cd "C:\Users\NAVEENRAJ\Desktop\projects\Manifest Current\Manifest--Agentic_Customer_Segmentation"
 streamlit run app.py
 ```
 
