@@ -12,6 +12,8 @@ SegmentIQ is a Streamlit-based customer segmentation app for retail banking. It 
 - Show a reasoning trace for each analysis
 - Export segmentation results to the `outputs/` folder
 
+<img width="1600" height="809" alt="image" src="https://github.com/user-attachments/assets/038d961a-d883-4246-a1ac-ca5827f874f2" />
+
 ## Project Structure
 
 - `app.py` - Streamlit UI
