@@ -15,6 +15,13 @@ COLUMN_ALIASES: dict[str, list[str]] = {
 }
 
 
+CANONICAL_FIELD_ALIASES: dict[str, str] = {
+    alias.lower(): canonical
+    for canonical, aliases in COLUMN_ALIASES.items()
+    for alias in [canonical, *aliases]
+}
+
+
 def resolve_column(df: pd.DataFrame, canonical: str) -> str | None:
     lower_map = {c.lower(): c for c in df.columns}
     for alias in COLUMN_ALIASES.get(canonical, [canonical]):
@@ -25,3 +32,21 @@ def resolve_column(df: pd.DataFrame, canonical: str) -> str | None:
 
 def required_columns_present(df: pd.DataFrame, keys: list[str]) -> dict[str, str | None]:
     return {key: resolve_column(df, key) for key in keys}
+
+
+def normalize_feature_name(name: str) -> str:
+    return CANONICAL_FIELD_ALIASES.get(name.strip().lower(), name.strip())
+
+
+def normalize_feature_names(names: list[str] | None) -> list[str]:
+    if not names:
+        return []
+
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for name in names:
+        canonical = normalize_feature_name(name)
+        if canonical not in seen:
+            normalized.append(canonical)
+            seen.add(canonical)
+    return normalized

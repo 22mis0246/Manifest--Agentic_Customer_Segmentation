@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 from data_store import store
+from pipeline.column_mapper import normalize_feature_names
 from pipeline.features import build_customer_features
 
 
 def feature_engineering_tool(features_requested: list[str] | None = None) -> dict:
     raw = store.get_raw()
-    requested = features_requested or [
+    requested = normalize_feature_names(features_requested) or [
         "avg_monthly_balance",
         "max_monthly_balance",
         "txn_frequency_monthly",

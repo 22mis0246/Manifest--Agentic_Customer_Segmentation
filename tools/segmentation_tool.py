@@ -7,6 +7,7 @@ from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler
 
 from data_store import store
+from pipeline.column_mapper import normalize_feature_names
 from pipeline.evaluation import evaluate_segments
 from pipeline.features import build_customer_features
 from pipeline.personas import build_personas
@@ -17,6 +18,13 @@ def _ensure_features() -> pd.DataFrame:
     if not store.has_customer_features():
         feature_engineering_tool()
     return store.get_customer_features()
+
+
+def _normalized_criteria(criteria: list[str] | None) -> list[str]:
+    normalized = normalize_feature_names(criteria)
+    if not normalized:
+        return ["avg_monthly_balance", "txn_frequency_monthly", "days_since_last_txn"]
+    return normalized
 
 
 def _rule_based_segments(df: pd.DataFrame, criteria: list[str]) -> tuple[pd.DataFrame, dict]:
@@ -92,7 +100,7 @@ def segmentation_tool(
     num_segments: int = 3,
     method: str = "rule_based",
 ) -> dict:
-    criteria = criteria or ["avg_monthly_balance", "txn_frequency_monthly", "days_since_last_txn"]
+    criteria = _normalized_criteria(criteria)
     customer_df = _ensure_features()
 
     if method == "kmeans":
