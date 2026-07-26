@@ -64,9 +64,10 @@ http://localhost:8501
 ## How To Use
 
 1. Upload a CSV from the left sidebar, or keep the sample dataset in `data/customers.csv`
-2. Enter a question in the analytics chat
-3. Review the answer, reasoning trace, and segment output
-4. Download the generated segment CSV if needed
+2. Type your question directly in the Analytics Chat box.
+3. Click Analyze to run the customer analysis.
+4. Review the answer, reasoning trace, and segment output
+5. Download the generated segment CSV if needed
 
 ## Example Questions
 
